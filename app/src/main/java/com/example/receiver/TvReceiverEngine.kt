@@ -1,5 +1,6 @@
 package com.example.receiver
 
+import android.content.Context
 import android.view.Surface
 import com.example.data.ReceiverState
 import com.example.data.StreamTelemetry
@@ -21,7 +22,7 @@ import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 
-class TvReceiverEngine {
+class TvReceiverEngine(context: Context) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val decoder = VideoDecoderRenderer()
@@ -63,10 +64,15 @@ class TvReceiverEngine {
         private set
 
     @Volatile
+    var webHttpsPort: Int = WebCastServer.DEFAULT_HTTPS_PORT
+        private set
+
+    @Volatile
     var wfdSinkPort: Int = MiracastWfdServer.DEFAULT_RTSP_PORT
         private set
 
     private val webCastServer = WebCastServer(
+        context = context,
         onWebConnecting = { senderName ->
             _receiverState.value = ReceiverState.Connecting(senderName)
         },
@@ -148,6 +154,7 @@ class TvReceiverEngine {
             localIpAddresses = latestEndpoints,
             listenPort = activePort,
             webPortalPort = webPortalPort,
+            webHttpsPort = webHttpsPort,
             wfdSinkPort = wfdSinkPort,
             wfdAdvertised = latestWfdAdvertised,
             wifiDirectGroup = latestP2pGroup,
@@ -177,8 +184,10 @@ class TvReceiverEngine {
         serverSocket = srv
         activePort = srv.localPort
 
-        // Start Zero-Install Web Cast Portal & Miracast WFD Sink
-        webPortalPort = webCastServer.start(tvName, requiredPin)
+        // Start Zero-Install Web Cast Portal (HTTP + HTTPS) & Miracast WFD Sink
+        val (httpP, httpsP) = webCastServer.start(tvName, requiredPin)
+        webPortalPort = httpP
+        webHttpsPort = httpsP
         wfdSinkPort = miracastWfdServer.start()
 
         publishStandby()

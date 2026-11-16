@@ -203,6 +203,7 @@ fun BeamScreenApp(
                             onRequestDiscoveryPermission = onRequestDiscoveryPermission,
                             onStartReceiver = viewModel::startTvReceiver,
                             onStopReceiver = viewModel::stopTvReceiver,
+                            onRefreshNetwork = viewModel::refreshNetworkEndpoints,
                             onAttachSurface = viewModel::attachTvSurface,
                             onToggleAspectMode = viewModel::toggleAspectMode,
                             onCycleOrientation = viewModel::cycleTvOrientation,

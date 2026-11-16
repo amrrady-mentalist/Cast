@@ -43,7 +43,7 @@ class BeamScreenViewModel(application: Application) : AndroidViewModel(applicati
     private val appContext = application.applicationContext
     private val settingsStore = SettingsDataStore(appContext)
     private val p2pManager = P2pNetworkManager(appContext)
-    private val receiverEngine = TvReceiverEngine()
+    private val receiverEngine = TvReceiverEngine(appContext)
 
     val settings: StateFlow<BeamSettings> = settingsStore.settingsFlow.stateIn(
         scope = viewModelScope,
@@ -121,6 +121,15 @@ class BeamScreenViewModel(application: Application) : AndroidViewModel(applicati
                 receiverEngine.wfdSinkPort
             )
         }
+    }
+
+    fun refreshNetworkEndpoints() {
+        receiverEngine.updateStandbyMetadata(
+            localIps = p2pManager.getLocalIpAddresses(),
+            p2pGroup = p2pManager.wifiDirectGroup.value,
+            nsdName = p2pManager.nsdRegisteredName.value,
+            wfdAdvertised = p2pManager.wfdAdvertised.value
+        )
     }
 
     fun startTvReceiver() {

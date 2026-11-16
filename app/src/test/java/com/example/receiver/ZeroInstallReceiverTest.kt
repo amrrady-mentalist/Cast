@@ -51,8 +51,18 @@ class ZeroInstallReceiverTest {
 
     @Test
     fun qrCodeGeneratorProducesValidBitmap() {
-        val bmp = QrCodeGenerator.generateQrBitmap("http://192.168.49.1:8080", 256)
+        val bmp = QrCodeGenerator.generateQrBitmap("https://192.168.1.42:8443", 256)
         assertNotNull(bmp)
         assertTrue(bmp!!.width == 256 && bmp.height == 256)
+    }
+
+    @Test
+    fun tlsKeystoreLoadsForHttpsServer() {
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+        val keyStore = java.security.KeyStore.getInstance("PKCS12")
+        context.resources.openRawResource(com.example.R.raw.beam_tls).use { stream ->
+            keyStore.load(stream, "beamscreen".toCharArray())
+        }
+        assertTrue(keyStore.containsAlias("beamscreen"))
     }
 }

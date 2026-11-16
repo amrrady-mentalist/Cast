@@ -34,6 +34,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import java.net.Inet4Address
 import java.net.NetworkInterface
@@ -74,6 +76,7 @@ class P2pNetworkManager(private val context: Context) {
 
     private val peerMap = ConcurrentHashMap<String, DiscoveredTvPeer>()
     private val p2pServiceTxtCache = ConcurrentHashMap<String, Map<String, String>>()
+    private val nsdResolveMutex = Mutex()
 
     private var nsdRegistrationListener: NsdManager.RegistrationListener? = null
     private var nsdDiscoveryListener: NsdManager.DiscoveryListener? = null
@@ -99,27 +102,49 @@ class P2pNetworkManager(private val context: Context) {
         }
     }
 
+    /**
+     * Returns local IPv4 addresses sorted with Wi-Fi LAN (`wlan`), Hotspot (`ap`/`swlan`),
+     * and Wi-Fi Direct (`p2p`) first, excluding cellular carrier and VPN tunnel interfaces
+     * when LAN/P2P addresses are present.
+     */
     fun getLocalIpAddresses(): List<String> {
-        val result = mutableListOf<String>()
+        data class RankedIp(val ip: String, val priority: Int)
+
+        val ranked = mutableListOf<RankedIp>()
         runCatching {
             val interfaces = NetworkInterface.getNetworkInterfaces() ?: return@runCatching
             while (interfaces.hasMoreElements()) {
                 val intf = interfaces.nextElement()
                 if (!intf.isUp || intf.isLoopback) continue
+                val name = intf.name.lowercase()
+                val priority = when {
+                    name.startsWith("wlan") || name.startsWith("eth") -> 0
+                    name.startsWith("ap") || name.startsWith("swlan") || name.startsWith("softap") -> 1
+                    name.startsWith("p2p") -> 2
+                    name.startsWith("rmnet") || name.startsWith("ccmni") ||
+                        name.startsWith("tun") || name.startsWith("ppp") ||
+                        name.startsWith("dummy") || name.startsWith("v4-") -> 99
+                    else -> 3
+                }
                 val addrs = intf.inetAddresses
                 while (addrs.hasMoreElements()) {
                     val addr = addrs.nextElement()
                     if (!addr.isLoopbackAddress && addr is Inet4Address) {
                         addr.hostAddress?.let { ip ->
                             if (!ip.startsWith("127.")) {
-                                result.add(ip)
+                                ranked.add(RankedIp(ip, priority))
                             }
                         }
                     }
                 }
             }
         }
-        return result.distinct()
+        val lanOrP2p = ranked.filter { it.priority < 99 }
+        val chosen = lanOrP2p.ifEmpty { ranked }
+        return chosen
+            .sortedBy { it.priority }
+            .map { it.ip }
+            .distinct()
     }
 
     private fun ensureP2pChannel(): WifiP2pManager.Channel? {
@@ -169,7 +194,7 @@ class P2pNetworkManager(private val context: Context) {
                         WifiP2pManager.WIFI_P2P_STATE_DISABLED
                     )
                     if (state != WifiP2pManager.WIFI_P2P_STATE_ENABLED) {
-                        _statusMessage.value = "Wi-Fi Direct is disabled. Enable Wi-Fi for P2P discovery."
+                        _statusMessage.value = "Wi-Fi is disabled. Enable Wi-Fi for P2P and Web Cast."
                     } else if (_statusMessage.value?.contains("disabled") == true) {
                         _statusMessage.value = null
                     }
@@ -179,10 +204,15 @@ class P2pNetworkManager(private val context: Context) {
     }
 
     private fun maybeAddOrUpdateP2pDevice(device: WifiP2pDevice) {
-        val txt = p2pServiceTxtCache[device.deviceAddress] ?: return
-        val tvName = txt["tvName"] ?: device.deviceName.ifBlank { "BeamScreen TV" }
-        val port = txt["port"]?.toIntOrNull() ?: StreamProtocol.DEFAULT_PORT
-        val requiresPin = txt["pin"] == "1"
+        val txt = p2pServiceTxtCache[device.deviceAddress]
+        // Show devices that either have BeamScreen TXT info OR are available Wi-Fi Direct peers
+        if (txt == null && device.status != WifiP2pDevice.AVAILABLE && device.status != WifiP2pDevice.CONNECTED) {
+            return
+        }
+        val tvName = txt?.get("tvName")
+            ?: device.deviceName.ifBlank { "Wi-Fi Direct Device" }
+        val port = txt?.get("port")?.toIntOrNull() ?: StreamProtocol.DEFAULT_PORT
+        val requiresPin = txt?.get("pin") == "1"
         val peer = DiscoveredTvPeer(
             id = "p2p_${device.deviceAddress}",
             name = tvName,
@@ -231,6 +261,20 @@ class P2pNetworkManager(private val context: Context) {
         val channel = ensureP2pChannel() ?: return
 
         configureWfdSink(manager, channel, enabled = true, controlPort = wfdControlPort)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            runCatching {
+                manager.startListening(channel, object : WifiP2pManager.ActionListener {
+                    override fun onSuccess() {
+                        Log.d(TAG, "Wi-Fi Direct startListening active")
+                    }
+
+                    override fun onFailure(reason: Int) {
+                        Log.w(TAG, "startListening failed: $reason")
+                    }
+                })
+            }
+        }
 
         manager.clearLocalServices(channel, object : WifiP2pManager.ActionListener {
             override fun onSuccess() {
@@ -358,6 +402,9 @@ class P2pNetworkManager(private val context: Context) {
         val channel = p2pChannel ?: return
         if (hasDiscoveryPermission()) {
             configureWfdSink(manager, channel, enabled = false, controlPort = 0)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                runCatching { manager.stopListening(channel, null) }
+            }
             localP2pServiceInfo?.let { info ->
                 manager.removeLocalService(channel, info, null)
             }
@@ -494,32 +541,42 @@ class P2pNetworkManager(private val context: Context) {
 
             override fun onServiceFound(serviceInfo: NsdServiceInfo) {
                 if (!serviceInfo.serviceType.contains("beamscreen")) return
-                @Suppress("DEPRECATION")
-                manager.resolveService(serviceInfo, object : NsdManager.ResolveListener {
-                    override fun onResolveFailed(info: NsdServiceInfo, errorCode: Int) {}
+                scope.launch(Dispatchers.IO) {
+                    nsdResolveMutex.withLock {
+                        val done = CompletableDeferred<Unit>()
+                        @Suppress("DEPRECATION")
+                        manager.resolveService(serviceInfo, object : NsdManager.ResolveListener {
+                            override fun onResolveFailed(info: NsdServiceInfo, errorCode: Int) {
+                                done.complete(Unit)
+                            }
 
-                    override fun onServiceResolved(resolved: NsdServiceInfo) {
-                        val hostIp = resolved.host?.hostAddress ?: return
-                        if (localIps.contains(hostIp)) return // Skip self
-                        val tvName = resolved.attributes["tvName"]
-                            ?.let { String(it, Charsets.UTF_8) }
-                            ?.ifBlank { resolved.serviceName }
-                            ?: resolved.serviceName
-                        val requiresPin = resolved.attributes["pin"]
-                            ?.let { String(it, Charsets.UTF_8) == "1" }
-                            ?: false
-                        val peer = DiscoveredTvPeer(
-                            id = "lan_${hostIp}_${resolved.port}",
-                            name = tvName,
-                            hostAddress = hostIp,
-                            port = resolved.port,
-                            transport = PeerTransport.LOCAL_LAN,
-                            requiresPin = requiresPin
-                        )
-                        peerMap[peer.id] = peer
-                        publishPeers()
+                            override fun onServiceResolved(resolved: NsdServiceInfo) {
+                                val hostIp = resolved.host?.hostAddress
+                                if (hostIp != null && !localIps.contains(hostIp)) {
+                                    val tvName = resolved.attributes["tvName"]
+                                        ?.let { String(it, Charsets.UTF_8) }
+                                        ?.ifBlank { resolved.serviceName }
+                                        ?: resolved.serviceName
+                                    val requiresPin = resolved.attributes["pin"]
+                                        ?.let { String(it, Charsets.UTF_8) == "1" }
+                                        ?: false
+                                    val peer = DiscoveredTvPeer(
+                                        id = "lan_${hostIp}_${resolved.port}",
+                                        name = tvName,
+                                        hostAddress = hostIp,
+                                        port = resolved.port,
+                                        transport = PeerTransport.LOCAL_LAN,
+                                        requiresPin = requiresPin
+                                    )
+                                    peerMap[peer.id] = peer
+                                    publishPeers()
+                                }
+                                done.complete(Unit)
+                            }
+                        })
+                        withTimeoutOrNull(3000L) { done.await() }
                     }
-                })
+                }
             }
 
             override fun onServiceLost(serviceInfo: NsdServiceInfo) {

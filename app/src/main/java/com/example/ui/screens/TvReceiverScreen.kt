@@ -48,6 +48,7 @@ import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.LockOpen
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.QrCode2
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.ScreenRotation
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.Tv
@@ -120,6 +121,7 @@ fun TvReceiverScreen(
     onRequestDiscoveryPermission: () -> Unit,
     onStartReceiver: () -> Unit,
     onStopReceiver: () -> Unit,
+    onRefreshNetwork: () -> Unit,
     onAttachSurface: (android.view.Surface?) -> Unit,
     onToggleAspectMode: () -> Unit,
     onCycleOrientation: () -> Unit,
@@ -148,6 +150,7 @@ fun TvReceiverScreen(
                 onRequestDiscoveryPermission = onRequestDiscoveryPermission,
                 onStartReceiver = onStartReceiver,
                 onStopReceiver = onStopReceiver,
+                onRefreshNetwork = onRefreshNetwork,
                 modifier = modifier
             )
         }
@@ -163,6 +166,7 @@ private fun TvStandbyDashboard(
     onRequestDiscoveryPermission: () -> Unit,
     onStartReceiver: () -> Unit,
     onStopReceiver: () -> Unit,
+    onRefreshNetwork: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val isListening = receiverState is ReceiverState.Standby || receiverState is ReceiverState.Starting
@@ -181,7 +185,7 @@ private fun TvStandbyDashboard(
     val primaryIp = standby?.localIpAddresses?.firstOrNull()
         ?: standby?.wifiDirectGroup?.groupOwnerIp
     val webPortalUrl = if (standby != null && !primaryIp.isNullOrBlank()) {
-        "http://$primaryIp:${standby.webPortalPort}"
+        "https://$primaryIp:${standby.webHttpsPort}"
     } else {
         null
     }
@@ -328,13 +332,13 @@ private fun TvStandbyDashboard(
                 onStopReceiver = onStopReceiver
             )
 
-            // Zero-Install Casting (No Sender App Required!)
+            // Zero-Install Casting (Browser / Laptop / Any Phone)
             if (standby != null) {
                 ZeroInstallCastCard(
                     webPortalUrl = webPortalUrl,
+                    httpFallbackPort = standby.webPortalPort,
                     qrBitmap = qrBitmap,
                     wfdAdvertised = standby.wfdAdvertised,
-                    wfdSinkPort = standby.wfdSinkPort,
                     copiedUrl = copiedLabel == "url",
                     onCopyUrl = {
                         webPortalUrl?.let {
@@ -342,6 +346,7 @@ private fun TvStandbyDashboard(
                             copiedLabel = "url"
                         }
                     },
+                    onRefreshNetwork = onRefreshNetwork,
                     onEnlargeQr = { showLargeQr = true }
                 )
 
@@ -442,11 +447,12 @@ private fun TvStandbyDashboard(
 @Composable
 private fun ZeroInstallCastCard(
     webPortalUrl: String?,
+    httpFallbackPort: Int,
     qrBitmap: android.graphics.Bitmap?,
     wfdAdvertised: Boolean,
-    wfdSinkPort: Int,
     copiedUrl: Boolean,
     onCopyUrl: () -> Unit,
+    onRefreshNetwork: () -> Unit,
     onEnlargeQr: () -> Unit
 ) {
     Card(
@@ -482,21 +488,38 @@ private fun ZeroInstallCastCard(
                         modifier = Modifier.size(20.dp)
                     )
                     Text(
-                        text = "CAST WITHOUT INSTALLING AN APP",
+                        text = "BROWSER CAST (NO APP NEEDED)",
                         style = MaterialTheme.typography.labelSmall,
                         color = ElectricCyan
                     )
                 }
-                Surface(
-                    shape = RoundedCornerShape(50),
-                    color = if (wfdAdvertised) LiveEmerald.copy(alpha = 0.16f) else IndigoSignal.copy(alpha = 0.16f)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Text(
-                        text = if (wfdAdvertised) "Miracast Active" else "WFD :$wfdSinkPort",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (wfdAdvertised) LiveEmerald else IndigoSignal,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                    )
+                    Surface(
+                        shape = RoundedCornerShape(50),
+                        color = if (wfdAdvertised) LiveEmerald.copy(alpha = 0.16f) else ElectricCyan.copy(alpha = 0.16f)
+                    ) {
+                        Text(
+                            text = if (wfdAdvertised) "Miracast + HTTPS" else "HTTPS Ready",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (wfdAdvertised) LiveEmerald else ElectricCyan,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                        )
+                    }
+                    IconButton(
+                        onClick = onRefreshNetwork,
+                        modifier = Modifier
+                            .size(48.dp)
+                            .testTag("refresh_ip_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Refresh,
+                            contentDescription = "Refresh IP addresses",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
                 }
             }
 
@@ -530,22 +553,15 @@ private fun ZeroInstallCastCard(
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Text(
-                        text = "1. Built-in Wireless Display (Miracast)",
+                        text = "Open in Laptop or Phone Browser",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "On Samsung Smart View, Xiaomi Wireless Display, or Windows (Win+K), pick this phone directly.",
+                        text = "Laptops (Chrome/Edge/Safari): cast entire screen, window, or tab. Tap Advanced → Proceed on the local TLS warning. Also reachable via HTTP :$httpFallbackPort.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = "2. Any Phone Browser (QR / Web Cast)",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurface
                     )
                     if (webPortalUrl != null) {
                         Row(
@@ -576,7 +592,7 @@ private fun ZeroInstallCastCard(
                         }
                     } else {
                         Text(
-                            text = "Connect to Wi-Fi or Wi-Fi Direct to generate Web Cast URL.",
+                            text = "Connect both devices to the same Wi-Fi (or turn on this phone's Hotspot) and tap Refresh.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

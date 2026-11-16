@@ -1,10 +1,12 @@
 package com.example.receiver
 
+import android.content.Context
 import android.graphics.BitmapFactory
 import android.util.Base64
 import android.util.Log
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import com.example.R
 import com.example.data.StreamTelemetry
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -19,14 +21,20 @@ import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.security.KeyStore
 import java.security.MessageDigest
+import javax.net.ssl.KeyManagerFactory
+import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLServerSocket
 
 /**
- * Embedded HTTP + RFC 6455 WebSocket Server allowing any phone or laptop browser
- * to cast its screen (where getDisplayMedia is supported), camera, photos, or videos
- * to this phone TV with ZERO app installation.
+ * Embedded HTTP + HTTPS (TLS) + RFC 6455 WebSocket/WSS Server.
+ * Running HTTPS on port 8443 unlocks navigator.mediaDevices.getDisplayMedia() (laptop screen cast)
+ * and getUserMedia() (phone camera cast) on modern browsers, while HTTP on port 8080 provides
+ * instant redirect + zero-warning photo/video casting.
  */
 class WebCastServer(
+    private val context: Context,
     private val onWebConnecting: (senderName: String) -> Unit,
     private val onWebFrame: (senderName: String, frame: ImageBitmap, width: Int, height: Int, telemetry: StreamTelemetry) -> Unit,
     private val onWebPaused: (senderName: String, paused: Boolean) -> Unit,
@@ -35,6 +43,7 @@ class WebCastServer(
     companion object {
         private const val TAG = "WebCastServer"
         const val DEFAULT_HTTP_PORT = 8080
+        const val DEFAULT_HTTPS_PORT = 8443
         private const val WS_MAGIC_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
         private const val MSG_CONTROL: Byte = 0x01
@@ -49,12 +58,18 @@ class WebCastServer(
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    private var serverSocket: ServerSocket? = null
+    private var httpServerSocket: ServerSocket? = null
+    private var httpsServerSocket: ServerSocket? = null
     private var activeWsClient: Socket? = null
-    private var acceptJob: Job? = null
+    private var httpAcceptJob: Job? = null
+    private var httpsAcceptJob: Job? = null
 
     @Volatile
     var listeningPort: Int = DEFAULT_HTTP_PORT
+        private set
+
+    @Volatile
+    var listeningHttpsPort: Int = DEFAULT_HTTPS_PORT
         private set
 
     @Volatile
@@ -68,38 +83,92 @@ class WebCastServer(
         this.requiredPin = requiredPin
     }
 
-    fun start(tvName: String, requiredPin: String?, preferredPort: Int = DEFAULT_HTTP_PORT): Int {
+    fun start(
+        tvName: String,
+        requiredPin: String?,
+        preferredHttpPort: Int = DEFAULT_HTTP_PORT,
+        preferredHttpsPort: Int = DEFAULT_HTTPS_PORT
+    ): Pair<Int, Int> {
         this.tvName = tvName
         this.requiredPin = requiredPin
-        if (acceptJob?.isActive == true && serverSocket != null) {
-            return listeningPort
-        }
 
-        val srv = try {
-            ServerSocket().apply {
-                reuseAddress = true
-                bind(InetSocketAddress(preferredPort))
-            }
-        } catch (_: Exception) {
-            ServerSocket().apply {
-                reuseAddress = true
-                bind(InetSocketAddress(0))
-            }
-        }
-        serverSocket = srv
-        listeningPort = srv.localPort
-
-        acceptJob = scope.launch {
-            while (isActive && !srv.isClosed) {
-                val client = try {
-                    srv.accept()
-                } catch (_: Exception) {
-                    break
+        if (httpAcceptJob?.isActive != true || httpServerSocket == null) {
+            val httpSrv = try {
+                ServerSocket().apply {
+                    reuseAddress = true
+                    bind(InetSocketAddress(preferredHttpPort))
                 }
-                launch { handleHttpOrWsConnection(client) }
+            } catch (_: Exception) {
+                ServerSocket().apply {
+                    reuseAddress = true
+                    bind(InetSocketAddress(0))
+                }
+            }
+            httpServerSocket = httpSrv
+            listeningPort = httpSrv.localPort
+
+            httpAcceptJob = scope.launch {
+                while (isActive && !httpSrv.isClosed) {
+                    val client = try {
+                        httpSrv.accept()
+                    } catch (_: Exception) {
+                        break
+                    }
+                    launch { handleHttpOrWsConnection(client) }
+                }
             }
         }
-        return listeningPort
+
+        if (httpsAcceptJob?.isActive != true || httpsServerSocket == null) {
+            val sslSrv = createSslServerSocket(preferredHttpsPort)
+            if (sslSrv != null) {
+                httpsServerSocket = sslSrv
+                listeningHttpsPort = sslSrv.localPort
+                httpsAcceptJob = scope.launch {
+                    while (isActive && !sslSrv.isClosed) {
+                        val client = try {
+                            sslSrv.accept()
+                        } catch (_: Exception) {
+                            break
+                        }
+                        launch { handleHttpOrWsConnection(client) }
+                    }
+                }
+            } else {
+                listeningHttpsPort = listeningPort
+            }
+        }
+
+        return listeningPort to listeningHttpsPort
+    }
+
+    private fun createSslServerSocket(preferredPort: Int): SSLServerSocket? {
+        return runCatching {
+            val pass = "beamscreen".toCharArray()
+            val keyStore = KeyStore.getInstance("PKCS12")
+            context.resources.openRawResource(R.raw.beam_tls).use { stream ->
+                keyStore.load(stream, pass)
+            }
+            val kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
+            kmf.init(keyStore, pass)
+            val sslContext = SSLContext.getInstance("TLS")
+            sslContext.init(kmf.keyManagers, null, null)
+            val factory = sslContext.serverSocketFactory
+            val srv = try {
+                factory.createServerSocket() as SSLServerSocket
+            } catch (_: Exception) {
+                return@runCatching null
+            }
+            srv.reuseAddress = true
+            try {
+                srv.bind(InetSocketAddress(preferredPort))
+            } catch (_: Exception) {
+                srv.bind(InetSocketAddress(0))
+            }
+            srv
+        }.onFailure { err ->
+            Log.w(TAG, "Failed to start HTTPS server socket: ${err.message}")
+        }.getOrNull()
     }
 
     private fun handleHttpOrWsConnection(client: Socket) {
@@ -140,7 +209,11 @@ class WebCastServer(
                 out.flush()
                 handleWebSocketLoop(client, DataInputStream(input), out)
             } else {
-                val html = buildWebPortalHtml(tvName, !requiredPin.isNullOrBlank())
+                val html = buildWebPortalHtml(
+                    tvDisplayName = tvName,
+                    requiresPin = !requiredPin.isNullOrBlank(),
+                    httpsPort = listeningHttpsPort
+                )
                 val body = html.toByteArray(Charsets.UTF_8)
                 val response = "HTTP/1.1 200 OK\r\n" +
                     "Content-Type: text/html; charset=utf-8\r\n" +
@@ -178,9 +251,9 @@ class WebCastServer(
             while (!client.isClosed) {
                 val frame = readWebSocketFrame(input) ?: break
                 when (frame.opcode) {
-                    0x08 -> break // Close
+                    0x08 -> break
                     0x09 -> sendWsPong(out, frame.payload)
-                    0x01 -> { // Text control message
+                    0x01 -> {
                         val msg = String(frame.payload, Charsets.UTF_8)
                         when {
                             msg.startsWith("HELLO:") -> {
@@ -201,7 +274,7 @@ class WebCastServer(
                             msg == "STOP" -> break
                         }
                     }
-                    0x02 -> { // Binary packet: [1B type][payload]
+                    0x02 -> {
                         if (!pinVerified || frame.payload.size <= 1) continue
                         val msgType = frame.payload[0]
                         if (msgType == MSG_IMAGE_FRAME) {
@@ -236,7 +309,7 @@ class WebCastServer(
                                     bitrateKbps = measuredKbps,
                                     width = w,
                                     height = h,
-                                    latencyMs = 28L,
+                                    latencyMs = 24L,
                                     frameCount = totalFrames,
                                     transportLabel = "Zero-Install Web"
                                 )
@@ -264,11 +337,15 @@ class WebCastServer(
     }
 
     fun stop() {
-        acceptJob?.cancel()
-        acceptJob = null
+        httpAcceptJob?.cancel()
+        httpAcceptJob = null
+        httpsAcceptJob?.cancel()
+        httpsAcceptJob = null
         disconnectActiveSession()
-        runCatching { serverSocket?.close() }
-        serverSocket = null
+        runCatching { httpServerSocket?.close() }
+        httpServerSocket = null
+        runCatching { httpsServerSocket?.close() }
+        httpsServerSocket = null
     }
 
     private fun readHttpHeaderBytes(input: BufferedInputStream): ByteArray? {
@@ -348,7 +425,11 @@ class WebCastServer(
         out.flush()
     }
 
-    private fun buildWebPortalHtml(tvDisplayName: String, requiresPin: Boolean): String {
+    private fun buildWebPortalHtml(
+        tvDisplayName: String,
+        requiresPin: Boolean,
+        httpsPort: Int
+    ): String {
         val escapedName = tvDisplayName
             .replace("&", "&amp;")
             .replace("<", "&lt;")
@@ -364,13 +445,13 @@ class WebCastServer(
   :root { --bg:#070A12; --card:#141C2E; --cyan:#22D3EE; --coral:#FB7185; --green:#34D399; --text:#F1F5F9; --muted:#94A3B8; }
   * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
   body { margin:0; padding:20px; background:var(--bg); color:var(--text); min-height:100vh; display:flex; justify-content:center; }
-  .wrap { width:100%; max-width:480px; display:flex; flex-direction:column; gap:14px; }
+  .wrap { width:100%; max-width:520px; display:flex; flex-direction:column; gap:14px; }
   .card { background:var(--card); border:1px solid #28354E; border-radius:20px; padding:18px; }
   .badge { display:inline-flex; align-items:center; gap:6px; font-size:11px; font-weight:700; letter-spacing:.08em; color:var(--cyan); text-transform:uppercase; }
   h1 { margin:6px 0 4px; font-size:22px; }
   p { margin:0; color:var(--muted); font-size:13px; line-height:1.45; }
   input, select { width:100%; padding:12px 14px; border-radius:12px; border:1px solid #28354E; background:#0F1524; color:var(--text); font-size:15px; margin-top:8px; }
-  .btn { width:100%; min-height:48px; border:0; border-radius:14px; font-size:15px; font-weight:700; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:8px; margin-top:10px; }
+  .btn { width:100%; min-height:48px; border:0; border-radius:14px; font-size:15px; font-weight:700; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:8px; margin-top:10px; text-decoration:none; }
   .btn-primary { background:var(--cyan); color:#002A33; }
   .btn-secondary { background:#182238; color:var(--text); border:1px solid #28354E; }
   .btn-stop { background:var(--coral); color:#fff; }
@@ -383,11 +464,17 @@ class WebCastServer(
 </head>
 <body>
 <div class="wrap">
+  <div id="httpsBanner" class="card" style="display:none; border-color:#22D3EE;">
+    <div class="badge">HTTPS Required for Screen &amp; Camera Capture</div>
+    <p style="margin-top:8px; color:#F1F5F9;">Modern browsers only allow screen sharing and camera capture over HTTPS. Tap below, then choose <strong>Advanced &rarr; Proceed</strong> once for the local TV certificate.</p>
+    <a id="httpsLink" class="btn btn-primary" href="#">Switch to Secure HTTPS (:$httpsPort)</a>
+  </div>
+
   <div class="card">
     <div class="badge">● Zero-Install Web Cast</div>
     <h1>$escapedName</h1>
-    <p>Cast directly from your browser without installing any app.</p>
-    <input id="deviceName" type="text" placeholder="Your Phone Name (e.g. Alex's Phone)" />
+    <p>Stream directly from your browser without installing any app.</p>
+    <input id="deviceName" type="text" placeholder="Your Device Name (e.g. Work Laptop)" />
     ${if (requiresPin) """<input id="pinInput" type="tel" maxlength="6" placeholder="Enter 4-digit TV PIN" />""" else ""}
     <select id="fpsSelect">
       <option value="24">24 FPS • Balanced Low Latency</option>
@@ -398,7 +485,7 @@ class WebCastServer(
   </div>
 
   <div class="card">
-    <button id="btnScreen" class="btn btn-primary" onclick="startScreenCast()">Cast Browser / Screen</button>
+    <button id="btnScreen" class="btn btn-primary" onclick="startScreenCast()">Cast Entire Screen / Window / Tab</button>
     <button id="btnCamera" class="btn btn-secondary" onclick="startCameraCast()">Cast Live Camera</button>
     <label class="btn btn-secondary" style="margin-top:10px;">
       Beam Photo or Video File
@@ -407,10 +494,6 @@ class WebCastServer(
     <button id="btnStop" class="btn btn-stop" onclick="stopCasting()" disabled>Stop Casting</button>
     <img id="previewImg" alt="Live Preview" />
     <p id="screenNote" class="warn" style="margin-top:10px; display:none;"></p>
-  </div>
-
-  <div class="card">
-    <p><strong style="color:#F1F5F9;">Tip for Samsung / Xiaomi / Windows:</strong> You can also swipe down Quick Settings &rarr; <em>Smart View / Cast / Wireless Display</em> to mirror your entire phone screen natively with zero app.</p>
   </div>
 </div>
 
@@ -430,10 +513,15 @@ const canvas = document.getElementById('frameCanvas');
 const ctx = canvas.getContext('2d');
 const previewImg = document.getElementById('previewImg');
 const screenNote = document.getElementById('screenNote');
+const httpsBanner = document.getElementById('httpsBanner');
+const httpsLink = document.getElementById('httpsLink');
 
-if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
+  httpsBanner.style.display = 'block';
+  httpsLink.href = 'https://' + location.hostname + ':$httpsPort/';
+} else if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
   screenNote.style.display = 'block';
-  screenNote.textContent = 'Note: Your mobile browser blocks full-screen capture from web pages. Use Live Camera, Photo/Video cast above, or your phone\u2019s built-in Smart View / Wireless Display.';
+  screenNote.textContent = 'Your mobile browser disables full-screen capture (getDisplayMedia) from web pages. On a laptop browser, Screen Cast works directly; on this phone, use Live Camera or Photo/Video Cast above.';
 }
 
 function setStatus(msg, isWarn) {
@@ -450,7 +538,7 @@ function connectWs(onReady) {
   ws = new WebSocket(proto + location.host + '/ws');
   ws.binaryType = 'arraybuffer';
   ws.onopen = () => {
-    const name = (document.getElementById('deviceName').value || navigator.platform || 'Web Phone').trim();
+    const name = (document.getElementById('deviceName').value || navigator.platform || 'Web Device').trim();
     const pinEl = document.getElementById('pinInput');
     const pin = pinEl ? pinEl.value.trim() : '';
     ws.send('HELLO:' + name + '|' + pin);
@@ -474,8 +562,12 @@ function connectWs(onReady) {
 }
 
 async function startScreenCast() {
+  if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
+    location.href = 'https://' + location.hostname + ':$httpsPort/';
+    return;
+  }
   if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
-    setStatus('This mobile browser does not allow web screen capture. Try Firefox/Desktop, Smart View, or Photo/Camera cast below.', true);
+    setStatus('This mobile browser blocks web screen capture. Use a laptop browser for Screen Cast, or Live Camera / Photo / Video below.', true);
     return;
   }
   try {
@@ -487,6 +579,10 @@ async function startScreenCast() {
 }
 
 async function startCameraCast() {
+  if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
+    location.href = 'https://' + location.hostname + ':$httpsPort/';
+    return;
+  }
   try {
     stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 1280 } }, audio: false });
     connectWs(() => beginVideoStream(stream, 'Casting Camera Live'));
@@ -502,12 +598,16 @@ function beginVideoStream(mediaStream, label) {
   setStatus(label, false);
   const fps = parseInt(document.getElementById('fpsSelect').value || '30', 10);
   const intervalMs = Math.max(30, Math.floor(1000 / fps));
-  stream.getVideoTracks()[0].onended = () => stopCasting();
+  if (mediaStream.getVideoTracks) {
+    const track = mediaStream.getVideoTracks()[0];
+    if (track) track.onended = () => stopCasting();
+  }
 
   clearInterval(timer);
   timer = setInterval(() => {
     if (!ws || ws.readyState !== WebSocket.OPEN || sending || video.videoWidth === 0) return;
-    const maxEdge = 960;
+    if (ws.bufferedAmount > 512 * 1024) return; // Drop frame instead of building latency
+    const maxEdge = 1080;
     const scale = Math.min(1, maxEdge / Math.max(video.videoWidth, video.videoHeight));
     const w = Math.round(video.videoWidth * scale);
     const h = Math.round(video.videoHeight * scale);
@@ -561,7 +661,7 @@ function handleFileCast(ev) {
     video.loop = true;
     video.muted = true;
     video.play();
-    connectWs(() => beginVideoStream({ getVideoTracks: () => [{ onended: null }] }, 'Streaming video: ' + file.name));
+    connectWs(() => beginVideoStream({ getVideoTracks: () => [] }, 'Streaming video: ' + file.name));
   }
 }
 

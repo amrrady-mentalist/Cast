@@ -100,6 +100,7 @@ sealed class ReceiverState {
         val localIpAddresses: List<String>,
         val listenPort: Int,
         val webPortalPort: Int,
+        val webHttpsPort: Int,
         val wfdSinkPort: Int,
         val wfdAdvertised: Boolean,
         val wifiDirectGroup: WifiDirectGroupInfo?,
