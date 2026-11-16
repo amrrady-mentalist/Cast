@@ -1,0 +1,67 @@
+<resources>
+    <string name="app_name">BeamScreen</string>
+
+    <!-- Navigation Tabs -->
+    <string name="nav_tv_screen">TV Screen</string>
+    <string name="nav_cast_phone">Cast Phone</string>
+    <string name="nav_settings">Settings</string>
+
+    <!-- TV Receiver Mode -->
+    <string name="tv_mode_badge">WIRELESS TV RECEIVER</string>
+    <string name="tv_ready_title">Ready for Casting</string>
+    <string name="tv_ready_subtitle">Open BeamScreen on another phone, select Cast Phone, and pick this screen to mirror in real time.</string>
+    <string name="tv_listening_on">Listening for P2P &amp; LAN</string>
+    <string name="tv_p2p_group_active">Wi-Fi Direct Group Active</string>
+    <string name="tv_p2p_starting">Starting Wireless Display…</string>
+    <string name="tv_start_receiver">Start TV Receiver</string>
+    <string name="tv_stop_receiver">Pause TV Receiver</string>
+    <string name="tv_permission_needed">Allow Nearby Wi-Fi access so other phones can discover this device over peer-to-peer Wi-Fi Direct.</string>
+    <string name="tv_grant_permission">Enable Discovery</string>
+    <string name="tv_pin_label">PAIRING PIN</string>
+    <string name="tv_network_endpoint">DIRECT IP</string>
+    <string name="tv_p2p_ssid">WI-FI DIRECT</string>
+    <string name="tv_connected_from">Mirroring from %1$s</string>
+    <string name="tv_disconnect_stream">End Mirroring</string>
+    <string name="tv_aspect_fit">Fit</string>
+    <string name="tv_aspect_fill">Fill</string>
+    <string name="tv_rotate_screen">Rotate</string>
+    <string name="tv_fullscreen_hint">Tap anywhere to toggle HUD</string>
+
+    <!-- Cast Sender Mode -->
+    <string name="cast_header_title">Cast to a Phone TV</string>
+    <string name="cast_header_subtitle">Discover nearby BeamScreen receivers via Wi-Fi Direct or local Wi-Fi for low-latency H.264 mirroring.</string>
+    <string name="cast_scan_peers">Scan Nearby</string>
+    <string name="cast_scanning">Scanning…</string>
+    <string name="cast_discovered_header">Nearby TV Screens</string>
+    <string name="cast_empty_title">No TV screens found yet</string>
+    <string name="cast_empty_subtitle">Ensure the receiving phone has BeamScreen open on the TV Screen tab, then tap Scan Nearby or connect directly by IP.</string>
+    <string name="cast_direct_ip_title">Direct IP Connection</string>
+    <string name="cast_direct_ip_hint">Receiver IP (e.g. 192.168.49.1)</string>
+    <string name="cast_pin_hint">4-digit PIN (optional)</string>
+    <string name="cast_connect_cast">Connect &amp; Cast</string>
+    <string name="cast_stop_casting">Stop Casting</string>
+    <string name="cast_live_banner">Casting Screen Live</string>
+    <string name="cast_pause_privacy">Privacy Pause</string>
+    <string name="cast_resume_stream">Resume Feed</string>
+    <string name="cast_quality_label">Stream Profile</string>
+
+    <!-- Settings -->
+    <string name="settings_title">Receiver &amp; Cast Settings</string>
+    <string name="settings_device_name_label">TV Screen Name</string>
+    <string name="settings_quality_title">Encoding Quality</string>
+    <string name="settings_pin_title">Require Pairing PIN</string>
+    <string name="settings_pin_subtitle">Protect this TV screen with a 4-digit PIN before senders can mirror</string>
+    <string name="settings_wake_title">Keep TV Screen Awake</string>
+    <string name="settings_wake_subtitle">Prevent display sleep while acting as a wireless TV monitor</string>
+    <string name="settings_low_latency_title">Ultra-Low Latency Mode</string>
+    <string name="settings_low_latency_subtitle">Use zero-B-frame H.264 baseline and TCP_NODELAY socket framing</string>
+    <string name="settings_auto_start_title">Auto-Start TV Receiver</string>
+    <string name="settings_auto_start_subtitle">Begin broadcasting availability immediately when the app opens</string>
+
+    <!-- Foreground Service Notification -->
+    <string name="notif_channel_name">Screen Casting</string>
+    <string name="notif_channel_desc">Active peer-to-peer screen mirroring session</string>
+    <string name="notif_casting_title">BeamScreen is casting</string>
+    <string name="notif_casting_text">Mirroring your display to %1$s</string>
+    <string name="notif_stop_action">Stop</string>
+</resources>

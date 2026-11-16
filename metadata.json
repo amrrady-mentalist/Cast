@@ -1,0 +1,6 @@
+{
+  "name": "BeamScreen",
+  "description": "Turn your phone into a low-latency wireless TV screen so other phones can cast their display over peer-to-peer Wi-Fi Direct or local Wi-Fi.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
