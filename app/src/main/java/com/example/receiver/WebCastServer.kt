@@ -434,6 +434,7 @@ class WebCastServer(
             .replace("&", "&amp;")
             .replace("<", "&lt;")
             .replace(">", "&gt;")
+        val httpPort = listeningPort
         return """
 <!DOCTYPE html>
 <html lang="en">
@@ -465,8 +466,8 @@ class WebCastServer(
 <body>
 <div class="wrap">
   <div id="httpsBanner" class="card" style="display:none; border-color:#22D3EE;">
-    <div class="badge">HTTPS Required for Screen &amp; Camera Capture</div>
-    <p style="margin-top:8px; color:#F1F5F9;">Modern browsers only allow screen sharing and camera capture over HTTPS. Tap below, then choose <strong>Advanced &rarr; Proceed</strong> once for the local TV certificate.</p>
+    <div id="httpsBadge" class="badge">HTTPS Needed for Camera &amp; Screen</div>
+    <p id="httpsDesc" style="margin-top:8px; color:#F1F5F9;">You are on HTTP (no cert prompt needed for Photo/Video). For <strong>Live Camera</strong> or <strong>Laptop Screen Cast</strong>, switch to HTTPS and tap <strong>Advanced &rarr; Proceed</strong> once.</p>
     <a id="httpsLink" class="btn btn-primary" href="#">Switch to Secure HTTPS (:$httpsPort)</a>
   </div>
 
@@ -474,20 +475,21 @@ class WebCastServer(
     <div class="badge">● Zero-Install Web Cast</div>
     <h1>$escapedName</h1>
     <p>Stream directly from your browser without installing any app.</p>
-    <input id="deviceName" type="text" placeholder="Your Device Name (e.g. Work Laptop)" />
+    <input id="deviceName" type="text" placeholder="Your Device Name (e.g. Alex's Phone)" />
     ${if (requiresPin) """<input id="pinInput" type="tel" maxlength="6" placeholder="Enter 4-digit TV PIN" />""" else ""}
     <select id="fpsSelect">
       <option value="24">24 FPS • Balanced Low Latency</option>
-      <option value="30" selected>30 FPS • Smooth Screen Motion</option>
+      <option value="30" selected>30 FPS • Smooth Motion</option>
       <option value="15">15 FPS • Battery Saver</option>
     </select>
     <div id="statusBox" class="status">Ready to connect</div>
+    <a id="httpFallbackLink" class="btn btn-secondary" style="display:none;" href="#">Use HTTP Mode (:$httpPort) for Photo / Video</a>
   </div>
 
   <div class="card">
     <button id="btnScreen" class="btn btn-primary" onclick="startScreenCast()">Cast Entire Screen / Window / Tab</button>
     <button id="btnCamera" class="btn btn-secondary" onclick="startCameraCast()">Cast Live Camera</button>
-    <label class="btn btn-secondary" style="margin-top:10px;">
+    <label id="btnFileLabel" class="btn btn-secondary" style="margin-top:10px;">
       Beam Photo or Video File
       <input id="fileInput" type="file" accept="image/*,video/*" style="display:none" onchange="handleFileCast(event)" />
     </label>
@@ -508,20 +510,39 @@ let sending = false;
 
 const statusBox = document.getElementById('statusBox');
 const btnStop = document.getElementById('btnStop');
+const btnScreen = document.getElementById('btnScreen');
+const btnCamera = document.getElementById('btnCamera');
+const btnFileLabel = document.getElementById('btnFileLabel');
 const video = document.getElementById('srcVideo');
 const canvas = document.getElementById('frameCanvas');
 const ctx = canvas.getContext('2d');
 const previewImg = document.getElementById('previewImg');
 const screenNote = document.getElementById('screenNote');
 const httpsBanner = document.getElementById('httpsBanner');
+const httpsBadge = document.getElementById('httpsBadge');
+const httpsDesc = document.getElementById('httpsDesc');
 const httpsLink = document.getElementById('httpsLink');
+const httpFallbackLink = document.getElementById('httpFallbackLink');
+const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
 
 if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
   httpsBanner.style.display = 'block';
   httpsLink.href = 'https://' + location.hostname + ':$httpsPort/';
-} else if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+  if (isMobile) {
+    httpsBadge.textContent = 'Direct HTTP Mode Active (No Cert Block)';
+    httpsDesc.innerHTML = 'You can <strong>Beam Photos &amp; Videos</strong> right away with zero security prompts. Switch to HTTPS only if you want <strong>Live Camera</strong> (note: mobile browsers block full phone screen capture from websites).';
+    httpsLink.className = 'btn btn-secondary';
+    httpsLink.textContent = 'Try HTTPS (:$httpsPort) for Live Camera';
+    btnScreen.className = 'btn btn-secondary';
+    btnFileLabel.className = 'btn btn-primary';
+    screenNote.style.display = 'block';
+    screenNote.textContent = 'Mobile browsers (Android Chrome & iOS Safari) block websites from capturing your phone screen. Use Beam Photo or Video above, or install BeamScreen on the sender phone for full screen mirroring.';
+  }
+} else if (isMobile || !navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+  btnScreen.className = 'btn btn-secondary';
+  btnCamera.className = 'btn btn-primary';
   screenNote.style.display = 'block';
-  screenNote.textContent = 'Your mobile browser disables full-screen capture (getDisplayMedia) from web pages. On a laptop browser, Screen Cast works directly; on this phone, use Live Camera or Photo/Video Cast above.';
+  screenNote.textContent = 'Mobile browsers (Android Chrome & iOS Safari) block web pages from capturing your phone screen. You can cast Live Camera, Photos, or Videos above without an app — or install BeamScreen on the sender phone for full screen mirroring.';
 }
 
 function setStatus(msg, isWarn) {
@@ -554,20 +575,35 @@ function connectWs(onReady) {
       }
     }
   };
+  ws.onerror = () => {
+    if (location.protocol === 'https:') {
+      setStatus('Browser blocked secure WebSocket (WSS) on self-signed cert. Tap HTTP Mode below for Photo/Video.', true);
+      httpFallbackLink.href = 'http://' + location.hostname + ':$httpPort/';
+      httpFallbackLink.style.display = 'flex';
+    } else {
+      setStatus('WebSocket connection error.', true);
+    }
+  };
   ws.onclose = () => {
     stopLoopOnly();
     btnStop.disabled = true;
-    setStatus('Disconnected from TV', false);
+    if (!statusBox.textContent.includes('HTTP Mode')) {
+      setStatus('Disconnected from TV', false);
+    }
   };
 }
 
 async function startScreenCast() {
+  if (isMobile) {
+    setStatus('Mobile Chrome/Safari blocks screen capture from websites. Use Beam Photo/Video, Live Camera, or BeamScreen app.', true);
+    return;
+  }
   if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
     location.href = 'https://' + location.hostname + ':$httpsPort/';
     return;
   }
   if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
-    setStatus('This mobile browser blocks web screen capture. Use a laptop browser for Screen Cast, or Live Camera / Photo / Video below.', true);
+    setStatus('This browser blocks screen capture from websites. Use Live Camera / Photo / Video below.', true);
     return;
   }
   try {
@@ -606,7 +642,7 @@ function beginVideoStream(mediaStream, label) {
   clearInterval(timer);
   timer = setInterval(() => {
     if (!ws || ws.readyState !== WebSocket.OPEN || sending || video.videoWidth === 0) return;
-    if (ws.bufferedAmount > 512 * 1024) return; // Drop frame instead of building latency
+    if (ws.bufferedAmount > 512 * 1024) return;
     const maxEdge = 1080;
     const scale = Math.min(1, maxEdge / Math.max(video.videoWidth, video.videoHeight));
     const w = Math.round(video.videoWidth * scale);
@@ -629,6 +665,7 @@ function beginVideoStream(mediaStream, label) {
 
 function handleFileCast(ev) {
   const file = ev.target.files[0];
+  ev.target.value = '';
   if (!file) return;
   stopLoopOnly();
   const url = URL.createObjectURL(file);

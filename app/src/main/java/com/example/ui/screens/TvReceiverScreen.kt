@@ -61,6 +61,8 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -174,6 +176,7 @@ private fun TvStandbyDashboard(
     val clipboard = LocalClipboardManager.current
     var copiedLabel by remember { mutableStateOf<String?>(null) }
     var showLargeQr by remember { mutableStateOf(false) }
+    var useHttpMode by remember { mutableStateOf(false) }
 
     LaunchedEffect(copiedLabel) {
         if (copiedLabel != null) {
@@ -185,7 +188,11 @@ private fun TvStandbyDashboard(
     val primaryIp = standby?.localIpAddresses?.firstOrNull()
         ?: standby?.wifiDirectGroup?.groupOwnerIp
     val webPortalUrl = if (standby != null && !primaryIp.isNullOrBlank()) {
-        "https://$primaryIp:${standby.webHttpsPort}"
+        if (useHttpMode) {
+            "http://$primaryIp:${standby.webPortalPort}"
+        } else {
+            "https://$primaryIp:${standby.webHttpsPort}"
+        }
     } else {
         null
     }
@@ -336,7 +343,10 @@ private fun TvStandbyDashboard(
             if (standby != null) {
                 ZeroInstallCastCard(
                     webPortalUrl = webPortalUrl,
+                    httpsPort = standby.webHttpsPort,
                     httpFallbackPort = standby.webPortalPort,
+                    useHttpMode = useHttpMode,
+                    onSelectHttpMode = { useHttpMode = it },
                     qrBitmap = qrBitmap,
                     wfdAdvertised = standby.wfdAdvertised,
                     copiedUrl = copiedLabel == "url",
@@ -444,10 +454,14 @@ private fun TvStandbyDashboard(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ZeroInstallCastCard(
     webPortalUrl: String?,
+    httpsPort: Int,
     httpFallbackPort: Int,
+    useHttpMode: Boolean,
+    onSelectHttpMode: (Boolean) -> Unit,
     qrBitmap: android.graphics.Bitmap?,
     wfdAdvertised: Boolean,
     copiedUrl: Boolean,
@@ -470,7 +484,7 @@ private fun ZeroInstallCastCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -502,7 +516,7 @@ private fun ZeroInstallCastCard(
                         color = if (wfdAdvertised) LiveEmerald.copy(alpha = 0.16f) else ElectricCyan.copy(alpha = 0.16f)
                     ) {
                         Text(
-                            text = if (wfdAdvertised) "Miracast + HTTPS" else "HTTPS Ready",
+                            text = if (wfdAdvertised) "Miracast + Web" else if (useHttpMode) "HTTP Direct" else "HTTPS Ready",
                             style = MaterialTheme.typography.labelSmall,
                             color = if (wfdAdvertised) LiveEmerald else ElectricCyan,
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
@@ -521,6 +535,33 @@ private fun ZeroInstallCastCard(
                         )
                     }
                 }
+            }
+
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                FilterChip(
+                    selected = !useHttpMode,
+                    onClick = { onSelectHttpMode(false) },
+                    label = { Text("HTTPS :$httpsPort (Laptop / Camera)") },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = ElectricCyan.copy(alpha = 0.18f),
+                        selectedLabelColor = ElectricCyan
+                    ),
+                    modifier = Modifier.testTag("mode_https_chip")
+                )
+                FilterChip(
+                    selected = useHttpMode,
+                    onClick = { onSelectHttpMode(true) },
+                    label = { Text("HTTP :$httpFallbackPort (No Cert Block)") },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = LiveEmerald.copy(alpha = 0.18f),
+                        selectedLabelColor = LiveEmerald
+                    ),
+                    modifier = Modifier.testTag("mode_http_chip")
+                )
             }
 
             Row(
@@ -553,13 +594,17 @@ private fun ZeroInstallCastCard(
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Text(
-                        text = "Open in Laptop or Phone Browser",
+                        text = if (useHttpMode) "Direct HTTP (Phone Photo & Video)" else "Open in Laptop or Phone Browser",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "Laptops (Chrome/Edge/Safari): cast entire screen, window, or tab. Tap Advanced → Proceed on the local TLS warning. Also reachable via HTTP :$httpFallbackPort.",
+                        text = if (useHttpMode) {
+                            "Bypasses mobile browser HTTPS blocks for Photos & Videos. (Mobile browsers block full phone screen capture—use Cast Phone tab for full mirroring.)"
+                        } else {
+                            "Laptops: cast entire screen/tab (tap Advanced → Proceed). If a phone browser blocks HTTPS, switch to HTTP :$httpFallbackPort above."
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -574,7 +619,7 @@ private fun ZeroInstallCastCard(
                                     fontFamily = JetBrainsMonoFontFamily,
                                     fontWeight = FontWeight.Bold
                                 ),
-                                color = ElectricCyan,
+                                color = if (useHttpMode) LiveEmerald else ElectricCyan,
                                 modifier = Modifier.weight(1f)
                             )
                             IconButton(
